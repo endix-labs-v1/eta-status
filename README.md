@@ -1,7 +1,7 @@
 # eta status
 
-The public status page for eta: is the API, the app, the MCP server, the live stream and the
-docs up right now, and how have they done over the last 90 days.
+The public status page for eta: are the API, the app, the app's live updates, the MCP server,
+the live stream and the docs up right now, and how have they done over the last 90 days.
 
 It needs no outside service, account or token. A scheduled GitHub Actions workflow runs the
 checks and writes the results to the `data` branch. GitHub Pages serves the page from `main`,
@@ -19,6 +19,7 @@ scripts/check.mjs  ── force-push ──>  history.json  <── fetch ──
 |---|---|---|
 | API | `GET https://api.eta.cash/health` | 200 and the body has `"ok": true` |
 | App | `GET https://www.eta.cash/` | 200 |
+| App live updates | websocket to `wss://api.eta.cash/ws`, no auth | it opens and its first frame is JSON with `"t":"marks"`, within 10 seconds |
 | MCP server | `POST https://api.eta.cash/mcp` with no key | 401 (it answers, so it is up) |
 | Live stream | websocket to `wss://api.eta.cash/stream`, sends `{"type":"auth","key":"eta_000000000000_AAAA…"}` (a throwaway placeholder key) | a frame that says `bad key`, then close code 4001 |
 | Docs | `GET https://eta-cash.gitbook.io/api` | 200 |
@@ -27,14 +28,16 @@ Each check records one of four states, the HTTP status and the time taken:
 
 - **up**: the answer is what a healthy service gives.
 - **slow** (`degraded` in the data): the right answer, but slower than the service's `slowMs`
-  in `services.json`. 3 seconds for the API, app, MCP and stream; 5 seconds for the docs, which
-  GitBook hosts.
-- **down**: a wrong answer, an error, or no answer in 15 seconds (10 for the stream).
-- **not yet live**: only the stream, and only until it has worked once. While it has never been
-  seen working, a websocket that does not open counts as not yet live, whatever the reason (today
-  a plain `GET /stream` is 404; the status of that GET is recorded). As soon as one check sees it
-  working, the time is saved in `liveSince` and from then on the same failure counts as down.
-  Nothing to flip by hand. A socket that opens but answers wrong is always down.
+  in `services.json`. 3 seconds for the API, app, live updates, MCP and stream; 5 seconds for
+  the docs, which GitBook hosts.
+- **down**: a wrong answer, an error, or no answer in 15 seconds (10 for the two websockets).
+  For live updates, a socket that does not open is always down.
+- **not yet live**: only the stream (`notLiveUntilUp` in `services.json`), and only until it has
+  worked once. While it has never been seen working, a websocket that does not open counts as
+  not yet live, whatever the reason (today a plain `GET /stream` is 404; the status of that GET
+  is recorded). As soon as one check sees it working, the time is saved in `liveSince` and from
+  then on the same failure counts as down. Nothing to flip by hand. A socket that opens but
+  answers wrong is always down.
 
 A check that comes back down or slow is tried once more after 5 seconds, and the second answer is
 the one recorded. This keeps one dropped packet from painting a red mark.

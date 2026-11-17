@@ -1,5 +1,6 @@
-// The production stream is not deployed yet, so its "up" path is tested against a tiny local
-// websocket server written with node:http only. It listens on port 0 (a free port the OS picks).
+// The websocket checks run against a tiny local websocket server written with node:http only
+// (the production stream is not deployed yet, so its "up" path can only be tested here).
+// It listens on port 0 (a free port the OS picks).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -10,11 +11,15 @@ import { emptyHistory } from '../scripts/history.mjs';
 const KEY = 'eta_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const svc = (path) => ({
   id: 'stream', kind: 'ws', url: `ws://127.0.0.1:${port}${path}`,
-  send: { type: 'auth', key: KEY }, expect: { text: 'bad key', close: 4001 }, slowMs: 3000,
+  send: { type: 'auth', key: KEY }, expect: { text: 'bad key', close: 4001 }, notLiveUntilUp: true, slowMs: 3000,
+});
+const liveSvc = (path) => ({
+  id: 'live', kind: 'ws', url: `ws://127.0.0.1:${port}${path}`, expect: { firstFrame: { t: 'marks' } }, slowMs: 3000,
 });
 
 let server, port;
 const received = [];
+const sockets = new Set();
 
 const frame = (opcode, payload) => Buffer.concat([Buffer.from([0x80 | opcode, payload.length]), payload]);
 const closeFrame = (code, reason = '') => {
@@ -42,12 +47,20 @@ before(async () => {
     res.writeHead(404).end('Not Found');
   });
   server.on('upgrade', (req, socket) => {
-    if (req.url === '/missing' || req.url === '/broken') { // what Railway does today for an app with no websocket route
+    sockets.add(socket);
+    if (req.url === '/missing' || req.url === '/broken' || req.url === '/nows') { // what Railway does today for an app with no websocket route
       socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       return;
     }
     const accept = createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    // live updates: the server speaks first, no auth
+    if (req.url === '/marks' || req.url === '/other' || req.url === '/silent') {
+      if (req.url === '/marks') socket.write(frame(0x1, Buffer.from('{"t":"marks","d":{"BTC":"97000.5"}}')));
+      if (req.url === '/other') socket.write(frame(0x1, Buffer.from('{"t":"hello"}')));
+      socket.on('data', () => socket.end()); // the client's close frame
+      return;
+    }
     socket.once('data', (buf) => {
       received.push(readClientText(buf));
       if (req.url === '/ok') {
@@ -64,7 +77,10 @@ before(async () => {
   port = server.address().port;
 });
 
-after(() => server.close());
+after(() => {
+  for (const s of sockets) s.destroy();
+  server.close();
+});
 
 test('auth with the placeholder key, "bad key" frame and close 4001: up', async () => {
   const r = await checkWs(svc('/ok'), emptyHistory());
@@ -113,4 +129,30 @@ test('HTTP: a 200 status line followed by a curl error is down, not up', async (
   assert.equal(r.status, 200);
   assert.equal(r.state, 'down');
   assert.match(r.note, /^curl exit 18/);
+});
+
+test('live updates: opens and the first frame has "t":"marks": up', async () => {
+  const r = await checkWs(liveSvc('/marks'), emptyHistory());
+  assert.equal(r.state, 'up');
+  assert.equal(r.status, 101);
+});
+
+test('live updates: opens but the first frame is something else: down', async () => {
+  const r = await checkWs(liveSvc('/other'), emptyHistory());
+  assert.equal(r.state, 'down');
+  assert.match(r.note, /first frame did not match; first frame: \{"t":"hello"\}/);
+});
+
+test('live updates: opens and sends nothing for 10 s: down', async () => {
+  const t0 = Date.now();
+  const r = await checkWs(liveSvc('/silent'), emptyHistory());
+  assert.equal(r.state, 'down');
+  assert.match(r.note, /no frame within 10s/);
+  assert.ok(Date.now() - t0 >= 10_000, 'waited the full 10 seconds');
+});
+
+test('live updates: does not open: down (never "not yet live", even with no history)', async () => {
+  const r = await checkWs(liveSvc('/nows'), emptyHistory());
+  assert.equal(r.state, 'down');
+  assert.match(r.note, /websocket did not open; plain GET is HTTP 404/);
 });

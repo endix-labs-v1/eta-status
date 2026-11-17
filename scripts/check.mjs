@@ -72,45 +72,69 @@ async function routeStatus(url) {
   return r.status;
 }
 
+// True when the frame is JSON and has every field in `want` with the same value.
+function frameMatches(text, want) {
+  try {
+    const obj = JSON.parse(text);
+    return Object.entries(want).every(([k, v]) => obj?.[k] === v);
+  } catch {
+    return false;
+  }
+}
+
+// Two kinds of websocket check, chosen by `expect` in services.json:
+//   expect.firstFrame: {...}           up when the first frame is JSON with those fields (we then close)
+//   expect.text + expect.close         up when a frame or the close reason holds `text` and the
+//                                      server closes with code `close` (after we send `send`)
+// Either way the answer must come within 10 seconds of connecting.
 export async function checkWs(svc, history) {
   if (typeof WebSocket !== 'function') throw new Error('This check needs Node 22 or newer (global WebSocket).');
   const t0 = performance.now();
-  const want = svc.expect.text.toLowerCase();
+  const first = svc.expect.firstFrame;
+  const want = svc.expect.text?.toLowerCase();
   const seen = await new Promise((resolve) => {
-    const s = { opened: false, matched: false, frame: '', code: null, reason: '', timedOut: false };
+    const s = { opened: false, matched: false, frame: '', gotFrame: false, code: null, reason: '', timedOut: false };
     let ws;
     const done = () => { clearTimeout(timer); resolve(s); };
     const timer = setTimeout(() => { s.timedOut = true; try { ws.close(); } catch {} done(); }, WS_TIMEOUT_MS);
     try { ws = new WebSocket(svc.url); } catch (e) { s.reason = clip(e.message); return done(); }
-    ws.addEventListener('open', () => { s.opened = true; ws.send(JSON.stringify(svc.send)); });
+    ws.addEventListener('open', () => { s.opened = true; if (svc.send) ws.send(JSON.stringify(svc.send)); });
     ws.addEventListener('message', (e) => {
       const text = typeof e.data === 'string' ? e.data : '';
-      if (!s.frame) s.frame = clip(text, 120);
+      if (!s.gotFrame) { s.gotFrame = true; s.frame = clip(text, 120); }
+      if (first) { // only the first frame counts; we have our answer, so hang up
+        s.matched = frameMatches(text, first);
+        try { ws.close(1000); } catch {}
+        return done();
+      }
       if (text.toLowerCase().includes(want)) s.matched = true;
     });
     ws.addEventListener('error', () => {});
     ws.addEventListener('close', (e) => {
       s.code = e.code; s.reason = clip(e.reason, 120);
-      if (s.reason.toLowerCase().includes(want)) s.matched = true;
+      if (want && s.reason.toLowerCase().includes(want)) s.matched = true;
       done();
     });
   });
   const ms = Math.round(performance.now() - t0);
 
   if (seen.opened) {
-    if (seen.matched && seen.code === svc.expect.close) {
-      return { state: ms > svc.slowMs ? 'degraded' : 'up', status: 101, ms };
-    }
-    const why = seen.timedOut ? `no close within ${WS_TIMEOUT_MS / 1000}s` : `close ${seen.code} "${seen.reason}"`;
+    const ok = first ? seen.matched : seen.matched && seen.code === svc.expect.close;
+    if (ok) return { state: ms > svc.slowMs ? 'degraded' : 'up', status: 101, ms };
+    let why;
+    if (first) why = seen.gotFrame ? 'first frame did not match' : `no frame within ${WS_TIMEOUT_MS / 1000}s`;
+    else why = seen.timedOut ? `no close within ${WS_TIMEOUT_MS / 1000}s` : `close ${seen.code} "${seen.reason}"`;
     return { state: 'down', status: 101, ms, note: `${why}; first frame: ${seen.frame || '(none)'}` };
   }
 
-  // The socket did not open. Until the stream has been seen working once (liveSince), that means
-  // "not yet live" whatever the GET says: an API outage before launch must not paint a service
-  // that does not exist yet red. Once it has worked, the same failure is down.
+  // The socket did not open. For a service marked notLiveUntilUp (the stream), until it has been
+  // seen working once (liveSince) that means "not yet live" whatever the GET says: an API outage
+  // before launch must not paint a service that does not exist yet red. Otherwise it is down.
   const status = await routeStatus(svc.url);
   const why = `${seen.timedOut ? 'websocket did not open in time' : 'websocket did not open'}; plain GET is HTTP ${status}`;
-  if (!history.liveSince[svc.id]) return status === 404 ? { state: 'notlive', status, ms } : { state: 'notlive', status, ms, note: why };
+  if (svc.notLiveUntilUp && !history.liveSince[svc.id]) {
+    return status === 404 ? { state: 'notlive', status, ms } : { state: 'notlive', status, ms, note: why };
+  }
   return { state: 'down', status, ms, note: why };
 }
 

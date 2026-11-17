@@ -16,7 +16,7 @@ anyway) and commit it to `main`. The page shows it within a few minutes.
 Rules the page relies on:
 - The heading is "## ", the date (YYYY-MM-DD), the time (HH:MM, UTC), "UTC", " | " and the title.
 - "Status:" is free text. Use Investigating, Identified, Monitoring or Resolved. Resolved shows green.
-- "Affected:" takes service ids from services.json: api, app, mcp, stream, docs.
+- "Affected:" takes service ids from services.json: api, app, live, mcp, stream, docs.
 - Paragraphs are separated by a blank line. Lines that start with "- " become a list.
 - Everything is shown as plain text: no links, bold or HTML.
 - Anything inside a comment like this one is ignored.

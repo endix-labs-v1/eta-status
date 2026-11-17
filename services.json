@@ -19,6 +19,14 @@
       "slowMs": 3000
     },
     {
+      "id": "live",
+      "name": "App live updates",
+      "kind": "ws",
+      "url": "wss://api.eta.cash/ws",
+      "expect": { "firstFrame": { "t": "marks" } },
+      "slowMs": 3000
+    },
+    {
       "id": "mcp",
       "name": "MCP server",
       "kind": "http",
@@ -39,6 +47,7 @@
       "url": "wss://api.eta.cash/stream",
       "send": { "type": "auth", "key": "eta_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
       "expect": { "text": "bad key", "close": 4001 },
+      "notLiveUntilUp": true,
       "slowMs": 3000
     },
     {

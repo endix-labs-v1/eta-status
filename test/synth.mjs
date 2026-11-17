@@ -9,8 +9,8 @@ import { writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { compact, emptyHistory, serialize } from '../scripts/history.mjs';
 
-export const IDS = ['api', 'app', 'mcp', 'stream', 'docs'];
-const OK = { api: 200, app: 200, mcp: 401, docs: 200 };
+export const IDS = ['api', 'app', 'live', 'mcp', 'stream', 'docs'];
+const OK = { api: 200, app: 200, live: 101, mcp: 401, docs: 200 };
 
 function rng(seed) {
   return () => {
@@ -53,7 +53,7 @@ export function synthRaw({ days = 100, end, events = defaultEvents(end), gaps = 
     h.recent.push({ t, r });
   }
   const first = new Date(start * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-  h.liveSince = { api: first, app: first, mcp: first, docs: first };
+  h.liveSince = { api: first, app: first, live: first, mcp: first, docs: first };
   h.updated = new Date(end * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   return h;
 }
