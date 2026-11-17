@@ -93,7 +93,7 @@
 
   function cellDetailDay(d) {
     const [u, g, x, n] = d.c;
-    if (u + g + x === 0) return `${d.key}: ${n ? 'not live yet' : 'no data'}`;
+    if (u + g + x === 0) return `${d.key}: ${n ? 'not yet live' : 'no data'}`;
     const total = u + g + x;
     const parts = [`${d.key}: ${fmtPct(pct(d.c))} up`];
     if (x) parts.push(`${x} of ${total} checks failed`);
@@ -180,7 +180,7 @@
           details.push(cellDetailDay(d));
         }
         const p = fmtPct(pct(sum));
-        summary = p ? `${p} uptime` : sum[3] ? 'Not live yet' : 'No data yet';
+        summary = p ? `${p} uptime` : sum[3] ? 'Not yet live' : 'No data yet';
         left.textContent = '90 days ago';
         right.textContent = 'Today';
         bar.setAttribute('aria-label', `${s.name}, last 90 days: ${summary}`);
@@ -197,7 +197,7 @@
           details.push(cellDetailSlot(p, s.id));
         }
         const pc = fmtPct(pct(sum));
-        summary = pc ? `${pc} uptime` : sum[3] ? 'Not live yet' : 'No data yet';
+        summary = pc ? `${pc} uptime` : sum[3] ? 'Not yet live' : 'No data yet';
         left.textContent = '24 hours ago';
         right.textContent = 'Now';
         bar.setAttribute('aria-label', `${s.name}, last 24 hours: ${summary}`);
