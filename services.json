@@ -1,0 +1,63 @@
+{
+  "services": [
+    {
+      "id": "api",
+      "name": "API",
+      "kind": "http",
+      "method": "GET",
+      "url": "https://api.eta.cash/health",
+      "expect": { "status": 200, "json": { "ok": true } },
+      "slowMs": 3000
+    },
+    {
+      "id": "app",
+      "name": "App",
+      "kind": "http",
+      "method": "GET",
+      "url": "https://www.eta.cash/",
+      "expect": { "status": 200 },
+      "slowMs": 3000
+    },
+    {
+      "id": "live",
+      "name": "App live updates",
+      "kind": "ws",
+      "url": "wss://api.eta.cash/ws",
+      "expect": { "firstFrame": { "t": "marks" } },
+      "slowMs": 3000
+    },
+    {
+      "id": "mcp",
+      "name": "MCP server",
+      "kind": "http",
+      "method": "POST",
+      "url": "https://api.eta.cash/mcp",
+      "headers": {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream"
+      },
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+      "expect": { "status": 401 },
+      "slowMs": 3000
+    },
+    {
+      "id": "stream",
+      "name": "Live stream",
+      "kind": "ws",
+      "url": "wss://api.eta.cash/stream",
+      "send": { "type": "auth", "key": "eta_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      "expect": { "text": "bad key", "close": 4001 },
+      "notLiveUntilUp": true,
+      "slowMs": 3000
+    },
+    {
+      "id": "docs",
+      "name": "Docs",
+      "kind": "http",
+      "method": "GET",
+      "url": "https://eta-cash.gitbook.io/api",
+      "expect": { "status": 200 },
+      "slowMs": 5000
+    }
+  ]
+}

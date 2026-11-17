@@ -1,0 +1,5 @@
+.DS_Store
+*.tmp
+# local runs; the real history lives on the data branch
+history.json
+demo.json

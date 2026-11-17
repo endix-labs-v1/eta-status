@@ -1,0 +1,72 @@
+name: checks
+
+# Runs the status checks and writes history.json to the `data` branch.
+# GitHub Pages serves `main` only, and this workflow has no push trigger, so the push to
+# `data` starts no Pages build and no new run.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: status-checks
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Node 22+ has WebSocket built in, so the stream check needs no npm package.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Load history from the data branch
+        run: |
+          set -euo pipefail
+          set +e
+          git ls-remote --exit-code --heads origin data > /dev/null
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            git fetch --depth=1 origin data
+            # ls-tree fails on a git error (the step stops) and prints nothing when the file is absent
+            listed=$(git ls-tree --name-only FETCH_HEAD -- history.json)
+            if [ -n "$listed" ]; then
+              git show FETCH_HEAD:history.json > "$RUNNER_TEMP/history.json"
+            else
+              echo "The data branch has no history.json: starting a new history."
+              echo "NEW_HISTORY=--new" >> "$GITHUB_ENV"
+            fi
+          elif [ "$rc" -eq 2 ]; then
+            echo "No data branch yet: starting a new history."
+            echo "NEW_HISTORY=--new" >> "$GITHUB_ENV"
+          else
+            echo "Could not reach the data branch (git exit $rc); not touching history." >&2
+            exit "$rc"
+          fi
+
+      - name: Run checks
+        run: node scripts/check.mjs --history "$RUNNER_TEMP/history.json" ${NEW_HISTORY:-}
+
+      # One orphan commit that holds only history.json, force-pushed over `data`.
+      # The branch never grows: the history lives in the file, not in git.
+      - name: Publish history to the data branch
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          blob=$(git hash-object -w "$RUNNER_TEMP/history.json")
+          tree=$(printf '100644 blob %s\thistory.json\n' "$blob" | git mktree)
+          commit=$(git commit-tree "$tree" -m "data: checks at $(date -u +%Y-%m-%dT%H:%MZ)")
+          git push --force origin "$commit:refs/heads/data"
