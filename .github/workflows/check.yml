@@ -37,7 +37,14 @@ jobs:
           set -e
           if [ "$rc" -eq 0 ]; then
             git fetch --depth=1 origin data
-            git show FETCH_HEAD:history.json > "$RUNNER_TEMP/history.json"
+            # ls-tree fails on a git error (the step stops) and prints nothing when the file is absent
+            listed=$(git ls-tree --name-only FETCH_HEAD -- history.json)
+            if [ -n "$listed" ]; then
+              git show FETCH_HEAD:history.json > "$RUNNER_TEMP/history.json"
+            else
+              echo "The data branch has no history.json: starting a new history."
+              echo "NEW_HISTORY=--new" >> "$GITHUB_ENV"
+            fi
           elif [ "$rc" -eq 2 ]; then
             echo "No data branch yet: starting a new history."
             echo "NEW_HISTORY=--new" >> "$GITHUB_ENV"

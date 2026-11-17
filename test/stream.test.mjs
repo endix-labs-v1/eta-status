@@ -5,8 +5,16 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkHttp, checkWs } from '../scripts/check.mjs';
-import { emptyHistory } from '../scripts/history.mjs';
+import { emptyHistory, serialize } from '../scripts/history.mjs';
+
+const CHECK = fileURLToPath(new URL('../scripts/check.mjs', import.meta.url));
 
 const KEY = 'eta_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const svc = (path) => ({
@@ -20,6 +28,10 @@ const liveSvc = (path) => ({
 let server, port;
 const received = [];
 const sockets = new Set();
+const hits = new Map(); // upgrade attempts per path
+// these paths serve the first connection only and refuse every later upgrade, the way a
+// service that falls over between the first try and the retry looks from the check
+const ONCE = new Set(['/slow-then-gone', '/wrong-then-gone']);
 
 const frame = (opcode, payload) => Buffer.concat([Buffer.from([0x80 | opcode, payload.length]), payload]);
 const closeFrame = (code, reason = '') => {
@@ -48,7 +60,9 @@ before(async () => {
   });
   server.on('upgrade', (req, socket) => {
     sockets.add(socket);
-    if (req.url === '/missing' || req.url === '/broken' || req.url === '/nows') { // what Railway does today for an app with no websocket route
+    const n = (hits.get(req.url) ?? 0) + 1;
+    hits.set(req.url, n);
+    if (req.url === '/missing' || req.url === '/broken' || req.url === '/nows' || (ONCE.has(req.url) && n > 1)) { // what Railway does today for an app with no websocket route
       socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       return;
     }
@@ -66,9 +80,15 @@ before(async () => {
       if (req.url === '/ok') {
         socket.write(frame(0x1, Buffer.from('{"type":"error","error":"bad key"}')));
         socket.write(closeFrame(4001, 'bad key'));
-      } else if (req.url === '/wrong') {
+      } else if (req.url === '/wrong' || req.url === '/wrong-then-gone') {
         socket.write(frame(0x1, Buffer.from('{"type":"hello"}')));
         socket.write(closeFrame(1000, 'bye'));
+      } else if (req.url === '/slow-then-gone') { // the right answer, but after 400 ms
+        return setTimeout(() => {
+          socket.write(frame(0x1, Buffer.from('{"type":"error","error":"bad key"}')));
+          socket.write(closeFrame(4001, 'bad key'));
+          setTimeout(() => socket.destroy(), 200);
+        }, 400);
       }
       setTimeout(() => socket.destroy(), 200);
     });
@@ -155,4 +175,37 @@ test('live updates: does not open: down (never "not yet live", even with no hist
   const r = await checkWs(liveSvc('/nows'), emptyHistory());
   assert.equal(r.state, 'down');
   assert.match(r.note, /websocket did not open; plain GET is HTTP 404/);
+});
+
+// One full run of the CLI (check, retry, store) against a stream service on the mock server.
+async function runOnce(path) {
+  const dir = mkdtempSync(join(tmpdir(), 'eta-status-cli-'));
+  try {
+    const services = join(dir, 'services.json');
+    const history = join(dir, 'history.json');
+    writeFileSync(services, JSON.stringify({ services: [{ ...svc(path), name: 'Live stream', slowMs: 200 }] }));
+    writeFileSync(history, serialize(emptyHistory()));
+    hits.delete(path);
+    await promisify(execFile)(process.execPath, [CHECK, '--history', history, '--services', services],
+      { env: { ...process.env, ETA_STATUS_RETRY_MS: '0' } });
+    const h = JSON.parse(readFileSync(history, 'utf8'));
+    return { stored: h.recent.at(-1).r.stream, liveSince: h.liveSince.stream, attempts: hits.get(path) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('retry: the stream answered right but slowly, then the retry could not connect: stored down, liveSince latched', async () => {
+  const r = await runOnce('/slow-then-gone');
+  assert.equal(r.attempts, 2, 'the slow answer was retried');
+  assert.notEqual(r.stored[0], 'notlive', 'a socket that opened in this run is never "not yet live"');
+  assert.equal(r.stored[0], 'down');
+  assert.ok(r.liveSince, 'it worked once (slowly), so liveSince is set');
+});
+
+test('retry: the stream opened but answered wrong, then the retry could not connect: stored down, no liveSince', async () => {
+  const r = await runOnce('/wrong-then-gone');
+  assert.equal(r.attempts, 2);
+  assert.equal(r.stored[0], 'down', 'a socket that opened in this run is never "not yet live"');
+  assert.equal(r.liveSince, undefined, 'it never gave the right answer');
 });

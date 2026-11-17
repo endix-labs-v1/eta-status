@@ -36,12 +36,15 @@ export function validate(h) {
   return h;
 }
 
+// Record the first time a service was seen working. Never moved or cleared once set.
+export function latchLive(h, id, t) {
+  if (!h.liveSince[id]) h.liveSince[id] = new Date(t * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 export function appendPoint(h, t, results) {
   h.recent.push({ t, r: results });
   for (const [id, res] of Object.entries(results)) {
-    if ((res[0] === 'up' || res[0] === 'degraded') && !h.liveSince[id]) {
-      h.liveSince[id] = new Date(t * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-    }
+    if (res[0] === 'up' || res[0] === 'degraded') latchLive(h, id, t);
   }
   h.updated = new Date(t * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   return h;

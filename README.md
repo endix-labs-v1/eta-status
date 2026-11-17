@@ -103,7 +103,7 @@ Node 22 or newer, curl and nothing else.
 
 ```sh
 node scripts/check.mjs --history history.json --new        # one real run; --new only when the file does not exist yet
-node --test test/history.test.mjs test/stream.test.mjs     # compaction on 100 synthetic days, stream check on a local mock
+node --test test/*.test.mjs                                # compaction, websocket checks on a local mock, workflow dry run
 node test/synth.mjs --out demo.json                        # 100 synthetic days for looking at the page
 python3 -m http.server 8000 --bind 127.0.0.1               # then open http://127.0.0.1:8000/?data=demo.json
 ```
@@ -113,9 +113,10 @@ pretend it is another time. On the public site these are ignored.
 
 ## Make it live (one time)
 
-1. Create the public repository `endix-labs-v1/eta-status` and push both branches:
-   `git push -u origin main data`. `main` must be the default branch: scheduled workflows run
-   only from the default branch.
+1. Create the public repository `endix-labs-v1/eta-status` and push `main`. `main` must be the
+   default branch: scheduled workflows run only from the default branch. Do not push a `data`
+   branch: the first run creates it. A `data` branch that exists without `history.json` is also
+   fine; the run starts a new history in it.
 2. Settings, Pages: Source "Deploy from a branch", branch `main`, folder `/ (root)`.
    `.nojekyll` is there so Pages serves `incidents.md` as it is.
 3. Actions tab: enable workflows if GitHub asks, open "checks" and press "Run workflow" once.

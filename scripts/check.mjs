@@ -11,7 +11,7 @@
 import { readFile, writeFile, rename, appendFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { appendPoint, compact, emptyHistory, serialize, validate } from './history.mjs';
+import { appendPoint, compact, emptyHistory, latchLive, serialize, validate } from './history.mjs';
 
 const UA = 'eta-status-check (+https://github.com/endix-labs-v1/eta-status)';
 const MARK = '__eta_status__';
@@ -87,7 +87,7 @@ function frameMatches(text, want) {
 //   expect.text + expect.close         up when a frame or the close reason holds `text` and the
 //                                      server closes with code `close` (after we send `send`)
 // Either way the answer must come within 10 seconds of connecting.
-export async function checkWs(svc, history) {
+export async function checkWs(svc, history, prior = {}) {
   if (typeof WebSocket !== 'function') throw new Error('This check needs Node 22 or newer (global WebSocket).');
   const t0 = performance.now();
   const first = svc.expect.firstFrame;
@@ -120,35 +120,54 @@ export async function checkWs(svc, history) {
 
   if (seen.opened) {
     const ok = first ? seen.matched : seen.matched && seen.code === svc.expect.close;
-    if (ok) return { state: ms > svc.slowMs ? 'degraded' : 'up', status: 101, ms };
+    if (ok) return { state: ms > svc.slowMs ? 'degraded' : 'up', status: 101, ms, opened: true };
     let why;
     if (first) why = seen.gotFrame ? 'first frame did not match' : `no frame within ${WS_TIMEOUT_MS / 1000}s`;
     else why = seen.timedOut ? `no close within ${WS_TIMEOUT_MS / 1000}s` : `close ${seen.code} "${seen.reason}"`;
-    return { state: 'down', status: 101, ms, note: `${why}; first frame: ${seen.frame || '(none)'}` };
+    return { state: 'down', status: 101, ms, opened: true, note: `${why}; first frame: ${seen.frame || '(none)'}` };
   }
 
   // The socket did not open. For a service marked notLiveUntilUp (the stream), until it has been
   // seen working once (liveSince) that means "not yet live" whatever the GET says: an API outage
   // before launch must not paint a service that does not exist yet red. Otherwise it is down.
+  // `prior.opened`: an earlier attempt in this same run opened the socket, so the service exists
+  // and this failure is down, not "not yet live".
   const status = await routeStatus(svc.url);
   const why = `${seen.timedOut ? 'websocket did not open in time' : 'websocket did not open'}; plain GET is HTTP ${status}`;
-  if (svc.notLiveUntilUp && !history.liveSince[svc.id]) {
+  if (svc.notLiveUntilUp && !history.liveSince[svc.id] && !prior.opened) {
     return status === 404 ? { state: 'notlive', status, ms } : { state: 'notlive', status, ms, note: why };
   }
   return { state: 'down', status, ms, note: why };
 }
 
-export async function checkService(svc, history) {
-  const run = () => (svc.kind === 'ws' ? checkWs(svc, history) : checkHttp(svc));
-  let r = await run();
-  if (r.state === 'down' || r.state === 'degraded') {
-    await sleep(RETRY_DELAY_MS);
-    r = await run();
+// One check with one retry. The second answer is the one recorded. The result also says
+// whether any attempt opened the socket (`opened`) and whether any attempt got the expected
+// answer, even slowly (`worked`): runChecks latches liveSince on `worked`, so a stream that
+// worked on the first try is not lost when the retry fails.
+export async function checkService(svc, history, opts = {}) {
+  const delay = opts.retryDelayMs ?? RETRY_DELAY_MS;
+  const attempt = (prior) => (svc.kind === 'ws' ? checkWs(svc, history, prior) : checkHttp(svc));
+  const tries = [await attempt({})];
+  if (tries[0].state === 'down' || tries[0].state === 'degraded') {
+    await sleep(delay);
+    tries.push(await attempt({ opened: Boolean(tries[0].opened) }));
   }
-  return r;
+  return {
+    ...tries.at(-1),
+    opened: tries.some((x) => x.opened),
+    worked: tries.some((x) => x.state === 'up' || x.state === 'degraded'),
+  };
 }
 
 const toRaw = (r) => (r.note ? [r.state, r.status, r.ms, r.note] : [r.state, r.status, r.ms]);
+
+// Run every check once, latch liveSince for anything that worked, and append the point.
+export async function runChecks(services, history, t, opts = {}) {
+  const results = await Promise.all(services.map((s) => checkService(s, history, opts)));
+  services.forEach((s, i) => { if (results[i].worked) latchLive(history, s.id, t); });
+  appendPoint(history, t, Object.fromEntries(services.map((s, i) => [s.id, toRaw(results[i])])));
+  return results;
+}
 
 async function loadHistory(path, allowNew) {
   let text;
@@ -179,10 +198,7 @@ async function main() {
   const history = await loadHistory(args.history, args.new);
 
   const t = Math.floor(Date.now() / 1000);
-  const results = await Promise.all(services.map((s) => checkService(s, history)));
-  const raw = Object.fromEntries(services.map((s, i) => [s.id, toRaw(results[i])]));
-
-  appendPoint(history, t, raw);
+  const results = await runChecks(services, history, t);
   compact(history, t);
 
   const tmp = `${args.history}.tmp`;
