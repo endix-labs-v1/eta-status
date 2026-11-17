@@ -5,6 +5,8 @@ name: checks
 # `data` starts no Pages build and no new run.
 
 on:
+  # GitHub runs a schedule from the default branch's latest commit, and may delay or drop runs when it is busy. The first merge
+  # (11-17) registered no schedule: 2.5 hours, no run. This commit to main registers it again.
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
