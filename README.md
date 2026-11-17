@@ -30,9 +30,11 @@ Each check records one of four states, the HTTP status and the time taken:
   in `services.json`. 3 seconds for the API, app, MCP and stream; 5 seconds for the docs, which
   GitBook hosts.
 - **down**: a wrong answer, an error, or no answer in 15 seconds (10 for the stream).
-- **not yet live**: only the stream. The websocket did not open, a plain `GET /stream` is 404,
-  and the stream has never been seen working. As soon as one check sees it working, the time is
-  saved in `liveSince` and from then on the same failure counts as down. Nothing to flip by hand.
+- **not yet live**: only the stream, and only until it has worked once. While it has never been
+  seen working, a websocket that does not open counts as not yet live, whatever the reason (today
+  a plain `GET /stream` is 404; the status of that GET is recorded). As soon as one check sees it
+  working, the time is saved in `liveSince` and from then on the same failure counts as down.
+  Nothing to flip by hand. A socket that opens but answers wrong is always down.
 
 A check that comes back down or slow is tried once more after 5 seconds, and the second answer is
 the one recorded. This keeps one dropped packet from painting a red mark.

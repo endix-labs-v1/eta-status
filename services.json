@@ -39,7 +39,6 @@
       "url": "wss://api.eta.cash/stream",
       "send": { "type": "auth", "key": "eta_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
       "expect": { "text": "bad key", "close": 4001 },
-      "notLiveStatus": [404],
       "slowMs": 3000
     },
     {

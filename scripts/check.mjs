@@ -48,7 +48,8 @@ export async function checkHttp(svc) {
 
   const r = await curl(args);
   const base = { status: r.status, ms: r.ms ?? HTTP_TIMEOUT_S * 1000 };
-  if (r.exit !== 0 && r.status === 0) return { ...base, state: 'down', note: `curl exit ${r.exit}: ${r.stderr}` };
+  // Any curl error is down, even after a status line: a 200 that stalls until the timeout is not up.
+  if (r.exit !== 0) return { ...base, state: 'down', note: `curl exit ${r.exit}: ${r.stderr}` };
   if (r.status !== svc.expect.status) return { ...base, state: 'down', note: `HTTP ${r.status}, expected ${svc.expect.status}` };
   if (svc.expect.json) {
     let body;
@@ -61,7 +62,7 @@ export async function checkHttp(svc) {
 }
 
 // The browser-style WebSocket hides the HTTP status of a failed handshake, so when the socket
-// never opens we ask with a plain GET whether the route exists at all. A plain GET, not an
+// never opens we record the status of a plain GET of the same URL. A plain GET, not an
 // upgrade request: on 2026-11-17 api.eta.cash answered every upgrade (even /health) with a
 // Railway 502 "Application failed to respond", while a plain GET of /stream said 404.
 async function routeStatus(url) {
@@ -104,13 +105,13 @@ export async function checkWs(svc, history) {
     return { state: 'down', status: 101, ms, note: `${why}; first frame: ${seen.frame || '(none)'}` };
   }
 
-  // Not yet live: the socket did not open, the route is not there (404), and the stream has never
-  // been seen working. Once it has worked (liveSince), the same answer counts as down.
+  // The socket did not open. Until the stream has been seen working once (liveSince), that means
+  // "not yet live" whatever the GET says: an API outage before launch must not paint a service
+  // that does not exist yet red. Once it has worked, the same failure is down.
   const status = await routeStatus(svc.url);
-  const notLive = (svc.notLiveStatus || []).includes(status) && !history.liveSince[svc.id];
-  if (notLive) return { state: 'notlive', status, ms };
-  const why = seen.timedOut ? 'websocket did not open in time' : 'websocket did not open';
-  return { state: 'down', status, ms, note: `${why}; plain GET is HTTP ${status}` };
+  const why = `${seen.timedOut ? 'websocket did not open in time' : 'websocket did not open'}; plain GET is HTTP ${status}`;
+  if (!history.liveSince[svc.id]) return status === 404 ? { state: 'notlive', status, ms } : { state: 'notlive', status, ms, note: why };
+  return { state: 'down', status, ms, note: why };
 }
 
 export async function checkService(svc, history) {

@@ -4,14 +4,13 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { checkWs } from '../scripts/check.mjs';
+import { checkHttp, checkWs } from '../scripts/check.mjs';
 import { emptyHistory } from '../scripts/history.mjs';
 
 const KEY = 'eta_000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const svc = (path) => ({
   id: 'stream', kind: 'ws', url: `ws://127.0.0.1:${port}${path}`,
-  send: { type: 'auth', key: KEY }, expect: { text: 'bad key', close: 4001 },
-  notLiveStatus: [404], slowMs: 3000,
+  send: { type: 'auth', key: KEY }, expect: { text: 'bad key', close: 4001 }, slowMs: 3000,
 });
 
 let server, port;
@@ -33,9 +32,17 @@ function readClientText(buf) {
 }
 
 before(async () => {
-  server = createServer((req, res) => { res.writeHead(404).end('Not Found'); });
+  server = createServer((req, res) => {
+    if (req.url === '/broken') return res.writeHead(502).end('Bad Gateway');
+    if (req.url === '/short') { // says 200 and 100 bytes, sends 10 and hangs up: curl exits 18
+      res.writeHead(200, { 'content-length': '100' });
+      res.write('0123456789');
+      return setTimeout(() => res.destroy(), 50);
+    }
+    res.writeHead(404).end('Not Found');
+  });
   server.on('upgrade', (req, socket) => {
-    if (req.url === '/missing') { // what Railway does today for an app with no websocket route
+    if (req.url === '/missing' || req.url === '/broken') { // what Railway does today for an app with no websocket route
       socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       return;
     }
@@ -85,4 +92,25 @@ test('same answer after the stream has worked once: down', async () => {
   const r = await checkWs(svc('/missing'), h);
   assert.equal(r.state, 'down');
   assert.match(r.note, /plain GET is HTTP 404/);
+});
+
+test('before launch, the whole host failing (upgrade refused, GET 502) is still not yet live', async () => {
+  const r = await checkWs(svc('/broken'), emptyHistory());
+  assert.equal(r.state, 'notlive');
+  assert.equal(r.status, 502);
+  assert.match(r.note, /plain GET is HTTP 502/);
+});
+
+test('after launch, the same failure is down', async () => {
+  const h = emptyHistory();
+  h.liveSince.stream = '2026-11-20T00:00:00Z';
+  const r = await checkWs(svc('/broken'), h);
+  assert.equal(r.state, 'down');
+});
+
+test('HTTP: a 200 status line followed by a curl error is down, not up', async () => {
+  const r = await checkHttp({ id: 'app', kind: 'http', method: 'GET', url: `http://127.0.0.1:${port}/short`, expect: { status: 200 }, slowMs: 3000 });
+  assert.equal(r.status, 200);
+  assert.equal(r.state, 'down');
+  assert.match(r.note, /^curl exit 18/);
 });
